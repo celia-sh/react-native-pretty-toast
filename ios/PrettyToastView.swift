@@ -26,7 +26,9 @@ struct PrettyToastView: View {
             let scaleY: CGFloat = isExpanded ? 1 : (geometry.collapsedSize.height / expandedHeight)
 
             ZStack {
-                toastBackground()
+                toastBackground(holeCornerRadius: geometry.holeCornerRadius.map {
+                    isExpanded ? $0.expanded : $0.collapsed
+                })
                     .overlay {
                         ToastContent(insets: geometry.contentInsets)
                             .frame(width: expandedWidth, height: expandedHeight)
@@ -160,7 +162,24 @@ struct PrettyToastView: View {
         .padding(.horizontal, 20)
     }
 
-    private func toastBackground() -> some View {
+    /// A hole punch gets circular corners whose radius follows the frame, so the
+    /// collapsed pill is a true circle over the camera; concentric corners turn a
+    /// small square into a lumpy blob.
+    @ViewBuilder
+    private func toastBackground(holeCornerRadius: CGFloat?) -> some View {
+        if let holeCornerRadius {
+            makeStrokeBackground(
+                shape: RoundedRectangle(cornerRadius: holeCornerRadius, style: .circular),
+                accent: window.toast?.accentColor ?? .white,
+                strokeOverride: window.toast?.strokeOverride,
+                tint: (window.toast?.disableBackdropSampling ?? false) ? .gray : window.backdropTint
+            )
+        } else {
+            defaultToastBackground()
+        }
+    }
+
+    private func defaultToastBackground() -> some View {
         let accent = window.toast?.accentColor ?? .white
         let strokeOverride = window.toast?.strokeOverride
         let disableSampling = window.toast?.disableBackdropSampling ?? false

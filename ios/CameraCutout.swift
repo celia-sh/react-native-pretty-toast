@@ -12,9 +12,11 @@ enum CameraCutout {
     /// iPhone Duo's inner display has an under-display camera, and its 82pt top
     /// inset would otherwise read as a Dynamic Island.
     private static let holePunches: [String: [(screen: CGSize, hole: CGRect)]] = [
-        // iPhone Duo cover display.
+        // iPhone Duo cover display. Measured from the display mask at 3x; the
+        // private `_exclusionArea` rounds it to {399, 30, 37, 37}, which leaves the
+        // collapsed pill peeking out of the camera.
         "iPhone19,4": [
-            (CGSize(width: 466, height: 678), CGRect(x: 399, y: 30, width: 37, height: 37)),
+            (CGSize(width: 466, height: 678), CGRect(x: 1199.0 / 3, y: 88.0 / 3, width: 37, height: 37)),
         ],
     ]
 
@@ -52,6 +54,8 @@ struct PillGeometry {
     /// Height available to short content before the pill has to grow.
     let baseContentArea: CGFloat
     let contentInsets: EdgeInsets
+    /// Circular corner radii for a hole punch, collapsed and expanded.
+    let holeCornerRadius: (collapsed: CGFloat, expanded: CGFloat)?
 
     /// `size` is the whole window for a hole punch.
     init(cutout: CameraCutout?, size: CGSize, safeAreaTop: CGFloat) {
@@ -60,6 +64,7 @@ struct PillGeometry {
         case .dynamicIsland:
             let islandHeight: CGFloat = 36
             morphsFromCutout = true
+            holeCornerRadius = nil
             collapsedSize = CGSize(width: 120, height: islandHeight)
             collapsedOffset = CGSize(width: 0, height: topOffset)
             // Nudge up 0.5pt so the centered stroke clears the DI's top line
@@ -82,9 +87,13 @@ struct PillGeometry {
             // The row pads itself by 20pt; leave 6pt between it and the hole.
             let clearance = (hole.width + ring) + 6 - 20
             let trailing = hole.midX > size.width / 2
+            // Collapse a point inside the hole so the antialiased edge and the
+            // fading stroke end up under the camera.
+            let collapsed = hole.insetBy(dx: 1, dy: 1)
             morphsFromCutout = true
-            collapsedSize = hole.size
-            collapsedOffset = CGSize(width: hole.midX - (size.width / 2), height: hole.minY)
+            holeCornerRadius = (collapsed.width / 2, baseHeight / 2)
+            collapsedSize = collapsed.size
+            collapsedOffset = CGSize(width: collapsed.midX - (size.width / 2), height: collapsed.minY)
             expandedOffset = CGSize(width: 0, height: hole.minY - ring)
             expandedWidth = size.width - (margin * 2)
             contentInsets = EdgeInsets(
@@ -96,6 +105,7 @@ struct PillGeometry {
             baseContentArea = baseHeight - 20
         case nil:
             morphsFromCutout = false
+            holeCornerRadius = nil
             collapsedSize = CGSize(width: 120, height: 36)
             collapsedOffset = .zero
             expandedOffset = .zero
