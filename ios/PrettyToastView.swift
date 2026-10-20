@@ -5,41 +5,40 @@ struct PrettyToastView: View {
     @State private var measuredContentHeight: CGFloat = 0
 
     var body: some View {
+        let hole = window.useDynamicIsland ? CameraCutout.holePunch(screenSize: window.bounds.size) : nil
         GeometryReader {
             let safeArea = $0.safeAreaInsets
-            let size = $0.size
+            let cutout: CameraCutout? = if let hole {
+                .holePunch(hole)
+            } else if window.useDynamicIsland && CameraCutout.hasDynamicIsland(safeAreaTop: safeArea.top) {
+                .dynamicIsland
+            } else {
+                nil
+            }
+            let geometry = PillGeometry(cutout: cutout, size: $0.size, safeAreaTop: safeArea.top)
+            let morphsFromCutout = geometry.morphsFromCutout
 
-            let haveDynamicIsland: Bool = safeArea.top >= 59 && window.useDynamicIsland
-            let dynamicIslandWidth: CGFloat = 120
-            let dynamicIslandHeight: CGFloat = 36
-            let topOffset: CGFloat = 11 + max((safeArea.top - 59), 0)
-            // Nudge up 0.5pt so the centered stroke clears the DI's top line
-            // instead of sitting half-behind it.
-            let expandedTopOffset: CGFloat = topOffset - 0.5
+            let expandedWidth = geometry.expandedWidth
+            let overflow = max(0, measuredContentHeight - geometry.baseContentArea)
+            let expandedHeight: CGFloat = geometry.baseHeight + overflow
 
-            let expandedWidth = size.width - (topOffset * 2)
-            let baseHeight: CGFloat = haveDynamicIsland ? 90 : 70
-            let baseContentArea: CGFloat = haveDynamicIsland ? (baseHeight - dynamicIslandHeight - 12) : (baseHeight - 20)
-            let overflow = max(0, measuredContentHeight - baseContentArea)
-            let expandedHeight: CGFloat = baseHeight + overflow
-
-            let scaleX: CGFloat = isExpanded ? 1 : (dynamicIslandWidth / expandedWidth)
-            let scaleY: CGFloat = isExpanded ? 1 : (dynamicIslandHeight / expandedHeight)
+            let scaleX: CGFloat = isExpanded ? 1 : (geometry.collapsedSize.width / expandedWidth)
+            let scaleY: CGFloat = isExpanded ? 1 : (geometry.collapsedSize.height / expandedHeight)
 
             ZStack {
                 toastBackground()
                     .overlay {
-                        ToastContent(haveDynamicIsland, expandedWidth: expandedWidth, islandHeight: dynamicIslandHeight)
+                        ToastContent(insets: geometry.contentInsets)
                             .frame(width: expandedWidth, height: expandedHeight)
                             .scaleEffect(x: scaleX, y: scaleY)
                     }
                     .frame(
-                        width: isExpanded ? expandedWidth : dynamicIslandWidth,
-                        height: isExpanded ? expandedHeight : dynamicIslandHeight
+                        width: isExpanded ? expandedWidth : geometry.collapsedSize.width,
+                        height: isExpanded ? expandedHeight : geometry.collapsedSize.height
                     )
-                    .opacity(haveDynamicIsland ? 1 : (isExpanded ? 1 : 0))
+                    .opacity(morphsFromCutout ? 1 : (isExpanded ? 1 : 0))
                     .modifier(CapsuleOpacityModifier(
-                        haveDynamicIsland: haveDynamicIsland,
+                        haveDynamicIsland: morphsFromCutout,
                         isExpanded: isExpanded
                     ))
                     .modifier(GeometryGroupModifier())
@@ -54,26 +53,29 @@ struct PrettyToastView: View {
                             }
                         }
                     )
-                    .offset(y: haveDynamicIsland ? (isExpanded ? expandedTopOffset : topOffset) : 0)
+                    .offset(isExpanded ? geometry.expandedOffset : geometry.collapsedOffset)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-            .padding(.top, haveDynamicIsland ? 0 : (isExpanded ? max(safeArea.top, 10) : 0))
+            .padding(.top, morphsFromCutout ? 0 : (isExpanded ? max(safeArea.top, 10) : 0))
             .ignoresSafeArea()
             .animation(.bouncy(duration: 0.3, extraBounce: 0), value: isExpanded)
         }
+        // A hole is placed against the whole window: the safe area can exclude a
+        // vertical status bar, and a pill wider than the safe area gets pinned to
+        // its leading edge instead of centered.
+        .ignoresSafeArea(edges: hole == nil ? [] : .all)
     }
 
     @ViewBuilder
-    func ToastContent(_ haveDynamicIsland: Bool, expandedWidth: CGFloat, islandHeight: CGFloat) -> some View {
+    func ToastContent(insets: EdgeInsets) -> some View {
         if let toast = window.toast {
             contentRow(toast, measuring: false)
-                // Reserve the island band at the top so the content is always laid out
-                // in the visible area beneath it. The enclosing fixed-height frame
-                // centers this padded box, which — because the insets are asymmetric —
-                // centers the content within [islandHeight, height - 12] for short
-                // content and lets it fill that band exactly once it overflows.
-                .padding(.top, haveDynamicIsland ? islandHeight : 0)
-                .padding(.bottom, haveDynamicIsland ? 12 : 0)
+                // Keep the content clear of the camera. The enclosing fixed-height
+                // frame centers this padded box, which — because the insets are
+                // asymmetric — centers the content within [islandHeight, height - 12]
+                // for short content under an island and lets it fill that band
+                // exactly once it overflows.
+                .padding(insets)
                 .compositingGroup()
                 .blur(radius: isExpanded ? 0 : 5)
                 .opacity(isExpanded ? 1 : 0)
@@ -82,6 +84,10 @@ struct PrettyToastView: View {
             // overflowing text. It renders the SAME row as the visible copy: measuring a
             // different layout than the one on screen is what used to truncate messages.
             contentRow(toast, measuring: true)
+                // A hole beside the content narrows the row, so the measurer needs the
+                // same side insets to wrap the text the same way.
+                .padding(.leading, insets.leading)
+                .padding(.trailing, insets.trailing)
                 .fixedSize(horizontal: false, vertical: true)
                 .background(
                     GeometryReader { geo in
