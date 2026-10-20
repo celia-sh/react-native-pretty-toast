@@ -5,41 +5,42 @@ struct PrettyToastView: View {
     @State private var measuredContentHeight: CGFloat = 0
 
     var body: some View {
+        let hole = window.useDynamicIsland ? CameraCutout.holePunch(screenSize: window.bounds.size) : nil
         GeometryReader {
             let safeArea = $0.safeAreaInsets
-            let size = $0.size
+            let cutout: CameraCutout? = if let hole {
+                .holePunch(hole)
+            } else if window.useDynamicIsland && CameraCutout.hasDynamicIsland(safeAreaTop: safeArea.top) {
+                .dynamicIsland
+            } else {
+                nil
+            }
+            let geometry = PillGeometry(cutout: cutout, size: $0.size, safeAreaTop: safeArea.top)
+            let morphsFromCutout = geometry.morphsFromCutout
 
-            let haveDynamicIsland: Bool = safeArea.top >= 59 && window.useDynamicIsland
-            let dynamicIslandWidth: CGFloat = 120
-            let dynamicIslandHeight: CGFloat = 36
-            let topOffset: CGFloat = 11 + max((safeArea.top - 59), 0)
-            // Nudge up 0.5pt so the centered stroke clears the DI's top line
-            // instead of sitting half-behind it.
-            let expandedTopOffset: CGFloat = topOffset - 0.5
+            let expandedWidth = geometry.expandedWidth
+            let overflow = max(0, measuredContentHeight - geometry.baseContentArea)
+            let expandedHeight: CGFloat = geometry.baseHeight + overflow
 
-            let expandedWidth = size.width - (topOffset * 2)
-            let baseHeight: CGFloat = haveDynamicIsland ? 90 : 70
-            let baseContentArea: CGFloat = haveDynamicIsland ? (baseHeight - dynamicIslandHeight - 12) : (baseHeight - 20)
-            let overflow = max(0, measuredContentHeight - baseContentArea)
-            let expandedHeight: CGFloat = baseHeight + overflow
-
-            let scaleX: CGFloat = isExpanded ? 1 : (dynamicIslandWidth / expandedWidth)
-            let scaleY: CGFloat = isExpanded ? 1 : (dynamicIslandHeight / expandedHeight)
+            let scaleX: CGFloat = isExpanded ? 1 : (geometry.collapsedSize.width / expandedWidth)
+            let scaleY: CGFloat = isExpanded ? 1 : (geometry.collapsedSize.height / expandedHeight)
 
             ZStack {
-                toastBackground()
+                toastBackground(holeCornerRadius: geometry.holeCornerRadius.map {
+                    isExpanded ? $0.expanded : $0.collapsed
+                })
                     .overlay {
-                        ToastContent(haveDynamicIsland, expandedWidth: expandedWidth, hasOverflow: overflow > 0)
+                        ToastContent(insets: geometry.contentInsets)
                             .frame(width: expandedWidth, height: expandedHeight)
                             .scaleEffect(x: scaleX, y: scaleY)
                     }
                     .frame(
-                        width: isExpanded ? expandedWidth : dynamicIslandWidth,
-                        height: isExpanded ? expandedHeight : dynamicIslandHeight
+                        width: isExpanded ? expandedWidth : geometry.collapsedSize.width,
+                        height: isExpanded ? expandedHeight : geometry.collapsedSize.height
                     )
-                    .opacity(haveDynamicIsland ? 1 : (isExpanded ? 1 : 0))
+                    .opacity(morphsFromCutout ? 1 : (isExpanded ? 1 : 0))
                     .modifier(CapsuleOpacityModifier(
-                        haveDynamicIsland: haveDynamicIsland,
+                        haveDynamicIsland: morphsFromCutout,
                         isExpanded: isExpanded
                     ))
                     .modifier(GeometryGroupModifier())
@@ -54,99 +55,131 @@ struct PrettyToastView: View {
                             }
                         }
                     )
-                    .offset(y: haveDynamicIsland ? (isExpanded ? expandedTopOffset : topOffset) : 0)
+                    .offset(isExpanded ? geometry.expandedOffset : geometry.collapsedOffset)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-            .padding(.top, haveDynamicIsland ? 0 : (isExpanded ? max(safeArea.top, 10) : 0))
+            .padding(.top, morphsFromCutout ? 0 : (isExpanded ? max(safeArea.top, 10) : 0))
             .ignoresSafeArea()
             .animation(.bouncy(duration: 0.3, extraBounce: 0), value: isExpanded)
         }
+        // A hole is placed against the whole window: the safe area can exclude a
+        // vertical status bar, and a pill wider than the safe area gets pinned to
+        // its leading edge instead of centered.
+        .ignoresSafeArea(edges: hole == nil ? [] : .all)
     }
 
     @ViewBuilder
-    func ToastContent(_ haveDynamicIsland: Bool, expandedWidth: CGFloat, hasOverflow: Bool) -> some View {
+    func ToastContent(insets: EdgeInsets) -> some View {
         if let toast = window.toast {
-            let pushBelowIsland = haveDynamicIsland && (!toast.message.isEmpty || hasOverflow)
-            VStack(spacing: 0) {
-                if pushBelowIsland {
-                    Spacer(minLength: 0)
-                }
+            contentRow(toast, measuring: false)
+                // Keep the content clear of the camera. The enclosing fixed-height
+                // frame centers this padded box, which — because the insets are
+                // asymmetric — centers the content within [islandHeight, height - 12]
+                // for short content under an island and lets it fill that band
+                // exactly once it overflows.
+                .padding(insets)
+                .compositingGroup()
+                .blur(radius: isExpanded ? 0 : 5)
+                .opacity(isExpanded ? 1 : 0)
 
-                HStack(spacing: 10) {
-                    ToastIconView(toast: toast, isExpanded: isExpanded)
-                        .frame(width: 50)
-
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(toast.title)
-                            .font(.callout)
-                            .fontWeight(.semibold)
-                            .foregroundStyle(.white)
-
-                        if !toast.message.isEmpty {
-                            Text(toast.message)
-                                .font(.caption)
-                                .foregroundColor(.white.opacity(0.6))
-                        }
+            // Hidden measurer — drives measuredContentHeight so the pill grows for
+            // overflowing text. It renders the SAME row as the visible copy: measuring a
+            // different layout than the one on screen is what used to truncate messages.
+            contentRow(toast, measuring: true)
+                // A hole beside the content narrows the row, so the measurer needs the
+                // same side insets to wrap the text the same way.
+                .padding(.leading, insets.leading)
+                .padding(.trailing, insets.trailing)
+                .fixedSize(horizontal: false, vertical: true)
+                .background(
+                    GeometryReader { geo in
+                        Color.clear.preference(
+                            key: ContentHeightKey.self,
+                            value: geo.size.height
+                        )
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
-                    if let label = toast.actionLabel, !label.isEmpty {
-                        Button(action: { window.actionTapped = true }) {
-                            Text(label)
-                                .font(.footnote)
-                                .fontWeight(.semibold)
-                                .foregroundStyle(toast.accentColor)
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 6)
-                                .background(
-                                    Capsule().fill(Color.white.opacity(0.12))
-                                )
-                        }
-                        .buttonStyle(.plain)
-                    }
+                )
+                .hidden()
+                .allowsHitTesting(false)
+                .onPreferenceChange(ContentHeightKey.self) { height in
+                    measuredContentHeight = height
                 }
-            }
-            .padding(.horizontal, 20)
-            .padding(.bottom, pushBelowIsland ? 12 : 0)
-            .compositingGroup()
-            .blur(radius: isExpanded ? 0 : 5)
-            .opacity(isExpanded ? 1 : 0)
-
-            // Hidden measurer — drives measuredContentHeight so the pill grows
-            // for overflowing text.
-            HStack(spacing: 10) {
-                Color.clear.frame(width: 50, height: 1)
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(toast.title)
-                        .font(.callout)
-                        .fontWeight(.semibold)
-
-                    if !toast.message.isEmpty {
-                        Text(toast.message)
-                            .font(.caption)
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .padding(.horizontal, 20)
-            .fixedSize(horizontal: false, vertical: true)
-            .background(
-                GeometryReader { geo in
-                    Color.clear.preference(
-                        key: ContentHeightKey.self,
-                        value: geo.size.height
-                    )
-                }
-            )
-            .hidden()
-            .onPreferenceChange(ContentHeightKey.self) { height in
-                measuredContentHeight = height
-            }
         }
     }
 
-    private func toastBackground() -> some View {
+    /// The one row layout, used both to draw the toast and to measure how tall it needs to
+    /// be. Keeping them in one place is the point: when the measurer was a separate copy it
+    /// left out the action button, so it sized the text against a column ~90pt wider than
+    /// the text actually gets. A message that wraps to three lines next to a button was
+    /// measured at two, the pill came up a line short, and the text was clipped.
+    @ViewBuilder
+    private func contentRow(_ toast: Toast, measuring: Bool) -> some View {
+        HStack(spacing: 10) {
+            // Only the width matters for measurement, and drawing the icon twice would run
+            // its symbol animation twice.
+            if measuring {
+                Color.clear.frame(width: 50, height: 1)
+            } else {
+                ToastIconView(toast: toast, isExpanded: isExpanded)
+                    .frame(width: 50)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(toast.title)
+                    .font(.callout)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.white)
+                    // Without this the enclosing fixed-height frame may clamp the text
+                    // rather than let it report the height it actually wants — which
+                    // truncated even single-line strings when the frame was a point short.
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if !toast.message.isEmpty {
+                    Text(toast.message)
+                        .font(.caption)
+                        .foregroundColor(.white.opacity(0.6))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            if let label = toast.actionLabel, !label.isEmpty {
+                Button(action: { window.actionTapped = true }) {
+                    Text(label)
+                        .font(.footnote)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(toast.accentColor)
+                        .fixedSize(horizontal: true, vertical: false)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(
+                            Capsule().fill(Color.white.opacity(0.12))
+                        )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 20)
+    }
+
+    /// A hole punch gets circular corners whose radius follows the frame, so the
+    /// collapsed pill is a true circle over the camera; concentric corners turn a
+    /// small square into a lumpy blob.
+    @ViewBuilder
+    private func toastBackground(holeCornerRadius: CGFloat?) -> some View {
+        if let holeCornerRadius {
+            makeStrokeBackground(
+                shape: RoundedRectangle(cornerRadius: holeCornerRadius, style: .circular),
+                accent: window.toast?.accentColor ?? .white,
+                strokeOverride: window.toast?.strokeOverride,
+                tint: (window.toast?.disableBackdropSampling ?? false) ? .gray : window.backdropTint
+            )
+        } else {
+            defaultToastBackground()
+        }
+    }
+
+    private func defaultToastBackground() -> some View {
         let accent = window.toast?.accentColor ?? .white
         let strokeOverride = window.toast?.strokeOverride
         let disableSampling = window.toast?.disableBackdropSampling ?? false

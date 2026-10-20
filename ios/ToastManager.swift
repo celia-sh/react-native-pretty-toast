@@ -15,7 +15,6 @@ import UIKit
     // Deferred so the status bar doesn't flash back in mid-collapse, and
     // cancellable so a queued toast keeps it hidden across the handoff.
     private var statusBarRestoreWorkItem: DispatchWorkItem?
-    private var statusBarWasHidden: Bool?
     private var imageLoadTask: URLSessionDataTask?
 
     @objc public var onDismiss: (() -> Void)?
@@ -36,10 +35,13 @@ import UIKit
         disableBackdropSampling: Bool,
         actionLabel: String
     ) {
-        let isFirstShow = overlayWindow == nil
+        // A new window, or one hidden since the last toast, lays the collapsed
+        // pill out first so the open animation has a starting frame.
+        let needsLayoutPass = overlayWindow?.isHidden ?? true
         ensureOverlayWindow()
 
         guard let overlayWindow else { return }
+        overlayWindow.isHidden = false
 
         let (primary, secondary) = iconColors(for: icon)
         let accent = accentColor.map { Color($0) }
@@ -87,7 +89,7 @@ import UIKit
             }
         }
 
-        if isFirstShow {
+        if needsLayoutPass {
             DispatchQueue.main.async(execute: present)
         } else {
             present()
@@ -303,6 +305,11 @@ import UIKit
             guard let self else { return }
             self.setStatusBarHidden(false)
             self.restoreKeyWindow()
+            // A visible full-screen window above the app's owns the status bar:
+            // iOS asks its controller, so the app's own screens could no longer
+            // hide or restyle the bar after the first toast. Hide it between
+            // toasts.
+            self.overlayWindow?.isHidden = true
         }
         statusBarRestoreWorkItem = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
@@ -320,32 +327,12 @@ import UIKit
         UIDevice.current.userInterfaceIdiom != .pad
     }
 
-    // Expo and React Native use RCTStatusBarManager with
-    // UIViewControllerBasedStatusBarAppearance=false. In that mode the
-    // overlay hosting controller cannot control the status bar and iOS will
-    // assert if an app tries to opt into controller-based appearance while
-    // RCTStatusBarManager is active. Use the public UIApplication API for the
-    // Expo/RN mode, while retaining the hosting-controller path for standalone
-    // apps that explicitly opt into controller-based appearance.
+    // Requires UIViewControllerBasedStatusBarAppearance=YES. Apps linked
+    // against the iOS 27 SDK no longer get UIApplication's app-wide status
+    // bar API on iOS 27, so the overlay's controller is the only way in.
     private func setStatusBarHidden(_ hidden: Bool) {
         guard shouldManageStatusBar else { return }
-
-        let usesViewControllerAppearance =
-            (Bundle.main.object(forInfoDictionaryKey: "UIViewControllerBasedStatusBarAppearance") as? Bool) ?? false
-
-        if usesViewControllerAppearance {
-            hostingController?.isStatusBarHidden = hidden
-            return
-        }
-
-        if hidden && statusBarWasHidden == nil {
-            statusBarWasHidden = UIApplication.shared.isStatusBarHidden
-        }
-        let nextHidden = hidden ? true : (statusBarWasHidden ?? false)
-        if !hidden {
-            statusBarWasHidden = nil
-        }
-        UIApplication.shared.setStatusBarHidden(nextHidden, with: .fade)
+        hostingController?.isStatusBarHidden = hidden
     }
 
     deinit {
