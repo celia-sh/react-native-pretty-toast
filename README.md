@@ -8,7 +8,7 @@ https://github.com/user-attachments/assets/b59a22b7-913d-4bc3-9629-5549de5e28d4
 
 A toast library that actually uses the hardware cutout. The pill morphs out of the Dynamic Island on iPhone and out of the camera cutout on Android, expands to fit your content, and collapses back in — with sensible slide-in fallbacks on devices without a cutout.
 
-- **Cutout-anchored toast on both platforms** — Dynamic Island on iPhones and `DisplayCutout` hole-punch on Android, detected automatically from system insets
+- **Cutout-anchored toast on both platforms** — Dynamic Island on iPhones, the iPhone Duo's cover-display camera, and `DisplayCutout` hole-punch on Android, detected automatically from system insets
 - **Backdrop-aware outline** — samples the content underneath and flips the stroke between accent and neutral so the pill stays legible on any background
 - **One API, three platforms** — iOS, Android, and Web share the same `toast.show()` call
 - **Sonner-style ergonomics** — `toast.promise()`, `toast.update()`, and `success` / `error` / `info` / `warning` / `loading` shorthands
@@ -26,29 +26,25 @@ npm install @celia-sh/react-native-pretty-toast
 
 ### iOS Setup
 
-#### Info.plist and Expo/RN status-bar ownership
+#### Required: Info.plist
 
-On iPadOS, the toast always keeps the status bar visible. On iPhone, the toast
-supports both iOS status-bar ownership modes:
+Set this key in your app's `Info.plist`:
 
-- Apps using Expo or React Native's `StatusBar` manager should keep this key
-  set to `false` (or omit it):
+```xml
+<key>UIViewControllerBasedStatusBarAppearance</key>
+<true/>
+```
 
-  ```xml
-  <key>UIViewControllerBasedStatusBarAppearance</key>
-  <false/>
-  ```
+On iPhone the toast hides the status bar through its overlay window's view
+controller while the pill is out, and hides that window between toasts so your
+own screens keep control of the status bar. On iPadOS the toast leaves the
+status bar visible. Apps linked against the iOS 27 SDK need the key anyway: iOS
+27 no longer applies `UIApplication`'s app-wide status bar API to them.
 
-  The toast falls back to the public `UIApplication` status-bar API in this
-  mode, so it does not conflict with `RCTStatusBarManager`.
-
-- Standalone apps that do not use `RCTStatusBarManager` may set the key to
-  `true`; the toast then uses its overlay view controller's
-  `prefersStatusBarHidden` implementation.
-
-**Expo users:** do not set this key to `true` when using `expo-status-bar`.
-Keep the default/`false` value and rebuild the native app after installing the
-package.
+**Expo users:** set it under `ios.infoPlist` in your app config, and drive the
+status bar per screen (for example native-stack `statusBarHidden` and
+`statusBarStyle`) instead of `expo-status-bar` or React Native's `StatusBar`,
+which expect the key to be `false`.
 
 #### Requirements
 
